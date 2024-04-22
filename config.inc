@@ -1,26 +1,26 @@
 # Which payload to use. Supported payloads: grub, seabios
-PAYLOAD=grub
+PAYLOAD=seabios
 
 # Example: macbookair5_2
-MODEL=
+MODEL=macbookpro8_1
 
 # If empty, default grub.cfg (from this repo) will be used. Skip if you use SeaBIOS.
 GRUB_CFG_PATH=
 
 # Path to cloned coreboot repo.
-COREBOOT_PATH=
+COREBOOT_PATH=/home/pcr/Desktop/coreboot
 
 # Path to flashrom binary. Minimal required flashrom version is 1.0.
 # Do not use flashrom from Debian repos. Instead, get the latest version from git and build:
 #
 # git clone https://review.coreboot.org/flashrom.git
 # cd flashrom
-# make -j$(nproc)
+# make CONFIG_INTERNAL=yes -j$(nproc)
 #
 FLASHROM=/usr/local/sbin/flashrom
 
 # In case if flashrom detects multiple chips, put "-c CHIP_MODEL" here.
-FLASHROM_ARGS=
+FLASHROM_ARGS="-c MX25L6473E"
 
 # If you want to use original Intel ME image in the final (stage2) ROM, set to 1
 STAGE2_USE_FULL_ME=0
