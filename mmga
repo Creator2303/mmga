@@ -372,10 +372,10 @@ case "$ACTION" in
                 echoerr "refs for $MODEL not found"
                 exit 1
             fi
-            if [[ "$branch" != "master" ]]; then
-                echotitle "Switching to master..."
-                git checkout master
-            fi
+            if [[ "$branch" != "master" && -n $(git show-ref refs/heads/master) ]]; then
+    echotitle "Switching to master..."
+    git checkout master
+fi
             if [ $(git branch --list $MODEL) ]; then
                 echotitle "Branch $MODEL already exists, trying to delete it..."
                 git branch -d $MODEL
