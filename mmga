@@ -157,7 +157,7 @@ prepare_config_stage1() {
     config_write_common "$file"
     echo "CONFIG_IFD_BIN_PATH=\"$WORK_DIR/stage1/flashregion_0_flashdescriptor.bin\"" >> "$file"
     echo "CONFIG_ME_BIN_PATH=\"$WORK_DIR/stage1/flashregion_2_intel_me.bin\"" >> "$file"
-    echo "CONFIG_COREBOOT_ROMSIZE_KB_1024=y" >> "$file"
+    echo "CONFIG_COREBOOT_ROMSIZE_KB_8192=y" >> "$file"
     echo "CONFIG_CBFS_SIZE=0xd0000" >> "$file"
     config_write_payload "$file"
 }
