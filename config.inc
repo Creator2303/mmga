@@ -8,7 +8,7 @@ MODEL=macbookpro8_1
 GRUB_CFG_PATH=
 
 # Path to cloned coreboot repo.
-COREBOOT_PATH=/home/pcr/Desktop/coreboot
+COREBOOT_PATH=~/Desktop/coreboot
 
 # Path to flashrom binary. Minimal required flashrom version is 1.0.
 # Do not use flashrom from Debian repos. Instead, get the latest version from git and build:
