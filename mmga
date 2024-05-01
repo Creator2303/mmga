@@ -111,8 +111,8 @@ validate_coreboot_path() {
         echoerr "COREBOOT_PATH is not set."
         exit 1
     elif [ ! -d "$COREBOOT_PATH" ]; then
-        echoerr "COREBOOT_PATH: \"$COREBOOT_PATH\" not found"
-        exit 1
+        echotitle "Coreboot directory not found. Cloning Coreboot..."
+        git clone https://review.coreboot.org/coreboot.git "$COREBOOT_PATH"
     fi
 }
 
@@ -158,7 +158,7 @@ prepare_config_stage1() {
     echo "CONFIG_IFD_BIN_PATH=\"$WORK_DIR/stage1/flashregion_0_flashdescriptor.bin\"" >> "$file"
     echo "CONFIG_ME_BIN_PATH=\"$WORK_DIR/stage1/flashregion_2_intel_me.bin\"" >> "$file"
     echo "CONFIG_COREBOOT_ROMSIZE_KB_8192=y" >> "$file"
-    echo "CONFIG_CBFS_SIZE=0xd0000" >> "$file"
+    echo "CONFIG_CBFS_SIZE=0x100000" >> "$file"
     config_write_payload "$file"
 }
 
@@ -245,18 +245,6 @@ get_stage2_layout() {
     fi
 }
 
-# $1: layout file
-# $2: region name
-get_layout_region() {
-    local layout="$1"
-    local reg="$2"
-    if [ ! -f "$layout" ]; then
-        echoerr "get_layout_region: file $layout doesn't exists"
-        1
-    fi
-    echo 0x$(cat "$layout" | grep $reg | cut -f 1 -d " " | sed 's/:/-0x/')
-}
-
 mkdir_in() {
     # mkdir if needed
     if [ ! -d "$1" ]; then
@@ -340,9 +328,50 @@ validate_model
 validate_coreboot_path
 
 VALIDATE=(FLASHROM IFDTOOL CBFSTOOL ME_CLEANER)
-for var in ${VALIDATE[@]}; do
-    validate_executable $var "${!var}"
-done
+# Check if flashrom directory exists, if not, clone flashrom repository
+if [ ! -d "$COREBOOT_PATH/flashrom" ]; then
+    echoinf "flashrom directory not found. Cloning flashrom repository..."
+    git clone https://review.coreboot.org/flashrom "$COREBOOT_PATH/flashrom"
+    echoinf "flashrom repository cloned successfully."
+fi
+
+# Build flashrom with internal support
+echoinf "Building flashrom with internal support..."
+make -j8 -C "$COREBOOT_PATH/flashrom" CONFIG_INTERNAL=yes
+echoinf "flashrom built successfully."
+
+# Check if flashrom executable exists
+if [ ! -x "$COREBOOT_PATH/flashrom/flashrom" ]; then
+    echoerr "Flashrom executable not found after building."
+    exit 1
+fi
+
+# Check if IFDTOOL directory exists
+if [ ! -d "$COREBOOT_PATH/util/ifdtool" ]; then
+    echoinf "IFDTOOL directory not found."
+    exit 1
+fi
+
+# Check if IFDTOOL executable exists
+if [ ! -x "$COREBOOT_PATH/util/ifdtool/ifdtool" ]; then
+    echoinf "IFDTOOL executable not found. Building IFDTOOL..."
+    make -j8 -C "$COREBOOT_PATH/util/ifdtool"
+    echoinf "IFDTOOL built successfully."
+fi
+
+# Check if CBFSTOOL directory exists
+if [ ! -d "$COREBOOT_PATH/util/cbfstool" ]; then
+    echoinf "CBFSTOOL directory not found."
+    exit 1
+fi
+
+# Check if CBFSTOOL executable exists
+if [ ! -x "$COREBOOT_PATH/util/cbfstool/cbfstool" ]; then
+    echoinf "CBFSTOOL executable not found. Building CBFSTOOL..."
+    make -C "$COREBOOT_PATH/util/cbfstool"
+    echoinf "CBFSTOOL built successfully."
+fi
+
 
 case "$ACTION" in
     dump)
@@ -405,148 +434,83 @@ fi
 
         size=$(stat --printf="%s" "$WORK_DIR/stage1/flashregion_2_intel_me.bin")
         if [ "$size" -gt 131072 ]; then
-            echoerr "Truncated ME is still larger than 128K ($size bytes). This is not OK, do not continue."
+            echoerr "Truncated ME is still larger than 128K ($size bytes). This can brick your device."
             exit 1
         fi
+        ;;
+
+    prepare-stage2)
+        patch_ifd "$WORK_DIR/stage2" "$(get_stage2_layout)" stage2
         ;;
 
     config-stage1)
         prepare_config_stage1
-        echoinf "Config saved to ${CBOL}$WORK_DIR/config${CRST}"
-        ;;
-
-    build-stage1)
-        prepare_config_stage1
-        coreboot_check_board
-
-        pushd "$COREBOOT_PATH" >/dev/null
-        make distclean
-
-        echotitle "Building coreboot..."
-        cp "$WORK_DIR/config" "$COREBOOT_PATH/.config"
-        make olddefconfig
-        make
-        postbuild_cbfs_add
-
-        echotitle "Extracting $PAYLOAD.elf to reuse it in future..."
-        $CBFSTOOL build/coreboot.rom extract -m x86 -n fallback/payload \
-            -f "$WORK_DIR/$PAYLOAD.elf"
-
-        popd >/dev/null
-        ;;
-
-    flash-stage1)
-        if [ -f "$WORK_DIR/stage1.rom" ]; then
-            rm "$WORK_DIR/stage1.rom"
-        fi
-        cp "$COREBOOT_PATH/build/coreboot.rom" "$WORK_DIR/stage1.rom.tmp"
-        dd if=/dev/zero of="$WORK_DIR/7mb.bin" bs=1024 count=7168 2>/dev/null
-        cat "$WORK_DIR/stage1.rom.tmp" "$WORK_DIR/7mb.bin" > "$WORK_DIR/stage1.rom"
-        rm "$WORK_DIR/stage1.rom.tmp"
-
-        fd_region=$(get_layout_region "$WORK_DIR/oem/layout.txt" fd)
-        me_region=$(get_layout_region "$WORK_DIR/oem/layout.txt" me)
-
-        echo
-        echo "${CBOL}IMPORTANT!${CRST}"
-        echo "Let's check read-only regions again. I will now launch ${CBOL}flashrom -p internal${CRST}:"
-        echo
-        echo "${CYAN}$(strrepeat "-" 80)${CRST}"
-        sudo $FLASHROM $FLASHROM_ARGS -p internal:laptop=force_I_want_a_brick
-        echo "${CYAN}$(strrepeat "-" 80)${CRST}"
-        echo
-        echo "1: FD. If you see that ${CBOL}$fd_region${CRST} region is read-only, DO NOT CONTINUE!"
-        echo
-        echo "    a) If you resumed from S3, reboot and try again."
-        echo "    b) If the $fd_region region is read-only after cold boot, inform"
-        echo "       the developer and DO NOT CONTINUE."
-        echo ""
-        echo "2: ME. If you see that ${CBOL}$me_region${CRST} region is read-only, DO NOT CONTINUE!"
-        echo
-        echo -n "If none of the above is the case, type uppercase yes to flash coreboot: "
-
-        read ans
-        if [[ "$ans" != "YES" ]]; then
-            echo "Exiting."
-            exit
-        fi
-
-        flash "$WORK_DIR/stage1.rom" "$DIR/layout-stage1.txt"
-        echotitle "Done."
-
-        echo
-        echo "If you see three ${CBOL}Verifying flash... VERIFIED.${CRST} lines above, then you're lucky."
-        echo "Now, shutdown the laptop (DO NOT REBOOT, shut it down), wait a few seconds"
-        echo "and turn it on. Then, continue to stage2."
-        echo
-        echo "If you see any errors, DO NOT SHUTDOWN your laptop and DO NOT REBOOT!"
-        echo "Instead, contact the developer(s) and let them help you recover."
-        ;;
-
-    prepare-stage2)
-        if [[ "$STAGE2_USE_FULL_ME" == "0" ]]; then
-            patch_ifd "$WORK_DIR/stage2" "$DIR/layout-stage2.txt" stage2
-        else
-            echo "Nothing to prepare. Continue to config-stage2 or build-stage2."
-        fi
         ;;
 
     config-stage2)
         prepare_config_stage2
-        echoinf "Config saved to ${CBOL}$WORK_DIR/config${CRST}"
         ;;
 
-    build-stage2)
-        prepare_config_stage2
-        coreboot_check_board
-
-        pushd "$COREBOOT_PATH" >/dev/null
-        make distclean
-
-        echotitle "Building coreboot..."
-        cp "$WORK_DIR/config" "$COREBOOT_PATH/.config"
-        make olddefconfig
-        make
+    build-stage1)
+        # Build crossgcc-i386
+        if [ ! -x "$COREBOOT_PATH/util/crossgcc/xgcc/bin/iasl" ]; then
+            echoinf "Building crossgcc-i386..."
+            cd "$COREBOOT_PATH"  # Change directory to coreboot
+            make crossgcc-i386 CPUS=$(nproc)
+            echoinf "crossgcc-i386 built successfully."
+        fi
+        
+        # Check if iasl executable exists
+        if [ ! -x "$COREBOOT_PATH/util/inteltool/iasl" ]; then
+            echoinf "iasl executable not found. Building iasl..."
+            make -C "$COREBOOT_PATH/util/inteltool"
+            echoinf "iasl built successfully."
+        fi
+        
+        # Check if nasm executable exists
+        if [ ! -x "$COREBOOT_PATH/util/crossgcc/xgcc/bin/nasm" ]; then
+            echoinf "nasm executable not found. Building nasm..."
+            cd "$COREBOOT_PATH"  # Change directory to coreboot
+            make -j8 nasm
+            echoinf "nasm built successfully."
+        fi
+        
+        make -C "$COREBOOT_PATH" olddefconfig
+        make -C "$COREBOOT_PATH" -j$(nproc)
         postbuild_cbfs_add
+        ;;
 
-        popd >/dev/null
+
+    build-stage2)
+        make -C "$COREBOOT_PATH" olddefconfig
+        make -C "$COREBOOT_PATH" -j$(nproc)
+        postbuild_cbfs_add
+        ;;
+
+    flash-stage1)
+        flash "$COREBOOT_PATH/build/coreboot.rom" "$WORK_DIR/stage1/layout.txt"
         ;;
 
     flash-stage2)
-        flash "$COREBOOT_PATH/build/coreboot.rom" $(get_stage2_layout)
-        echotitle "Done."
-
-        echo
-        echo "Congratulations!"
-        echo
-        echo "Now, shutdown the laptop again (again, DO NOT REBOOT, shut down), wait a few seconds,"
-        echo "power it up and enjoy coreboot."
+        flash "$COREBOOT_PATH/build/coreboot.rom" "$(get_stage2_layout)"
         ;;
 
     flash-oem)
         if [ ! -f "$WORK_DIR/oem/dump.bin" ]; then
-            echoerr "OEM dump $WORK_DIR/oem/dump.bin not found"
+            echoerr "Dump \"$WORK_DIR/oem/dump.bin\" doesn't exists"
             exit 1
         fi
-
-        echo -n "Type uppercase yes to flash OEM firmware: "
-
-        read ans
-        if [[ "$ans" != "YES" ]]; then
-            echo "Exiting."
-            exit
-        fi
-
-        flash "$WORK_DIR/oem/dump.bin" "$WORK_DIR/oem/layout.txt"
-        echotitle "Done."
-
-        echo
-        echo "Now, shutdown the laptop (DO NOT REBOOT, shut down), wait a few seconds,"
-        echo "then power it up again."
+        echotitle "Flashing OEM dump..."
+        sudo $FLASHROM $FLASHROM_ARGS \
+            -p internal:laptop=force_I_want_a_brick \
+            -w "$WORK_DIR/oem/dump.bin"
         ;;
 
     *)
-        echoerr "Unrecognized action $ACTION"
+        echoerr "Unknown action: \"$ACTION\""
+        show_help
         exit 1
         ;;
 esac
+
+echoinf "Done!"
